@@ -92,14 +92,14 @@ C-----------------------------------------------
       INTEGER :: ILAW,IMASS,IDEL,
      .    IRUPT
       my_real :: RHO0,FSCALEX,FSCALEX_UNIT,
-     .   E_ELAS_N,E_ELAS_S,TMAX_N,TMAX_S,
-     .                   GIC,GIIC,EXP_G,EXP_BK,DISP_0N,DISP_0S,DELTA0N,DELTA0S,UND,UTD,GAMA
+     .   E_ELAS_N,E_ELAS_S,TMAX_N,TMAX_S,IEVOL,ALPHA
+     .   GIC,GIIC,EXP_G,EXP_BK,DISP_0N,DISP_0S,DELTA0N,DELTA0S,UND,UTD,GAMA
       LOGICAL :: IS_AVAILABLE,IS_ENCRYPTED
 C=======================================================================
       ILAW = 117
 !
       IS_ENCRYPTED   = .FALSE.
-      IS_AVAILABLE = .FALSE.
+      IS_AVAILABLE   = .FALSE.
 !
       CALL HM_OPTION_IS_ENCRYPTED(IS_ENCRYPTED)
 Card1
@@ -116,6 +116,9 @@ Card1
       CALL HM_GET_FLOATV('MAT_E_ELAS_S'   ,E_ELAS_S     ,IS_AVAILABLE, LSUBMODEL, UNITAB)
       CALL HM_GET_FLOATV('MAT_TMAX_N'     ,TMAX_N       ,IS_AVAILABLE, LSUBMODEL, UNITAB)
       CALL HM_GET_FLOATV('MAT_TMAX_S'     ,TMAX_S       ,IS_AVAILABLE, LSUBMODEL, UNITAB)
+
+      CALL HM_GET_INTV('MAT_IEVOL',       ,IEVOL, IS_AVAILABLE, LSUBMODEL, UNITAB)
+      CALL HM_GET_FLOAT('MAT_ALPHA',      ,ALPHA, IS_AVAILABLE, LSUBMODEL, UNITAB)
 
       CALL HM_GET_INTV  ('MAT_IRUPT'      ,IRUPT        ,IS_AVAILABLE, LSUBMODEL)
       CALL HM_GET_INTV  ('MAT_IDEL'       ,IDEL         ,IS_AVAILABLE, LSUBMODEL)
@@ -143,6 +146,7 @@ c-------------------
       IF (GAMA  == ZERO)   GAMA   = ONE
       IF (EXP_G  == ZERO) EXP_G   = TWO
       IF (E_ELAS_S == ZERO) E_ELAS_S = E_ELAS_N
+      IF (IEVOL == ZERO) IEVOL = ONE
       IF ( GIC < (TMAX_N**2 / TWO/E_ELAS_N )  ) THEN
         GIC = TMAX_N**2 / TWO/E_ELAS_N
         CALL ANCMSG(MSGID=3016,MSGTYPE=MSGWARNING,ANMODE=ANINFO_BLIND_1,
@@ -191,6 +195,8 @@ C-------------------------------------------
       UPARAM(15) = UND! ultimate displacement in normal direction (UND)
       UPARAM(16) = UTD! ultimate displacement in tangential direction (UTD)
       UPARAM(17) = FSCALEX
+      UPARAM(18) = IEVOL
+      UPARAM(19) = ALPHA
 
 C-------------------------------------------
 C Interface Contact
