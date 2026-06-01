@@ -276,6 +276,7 @@ Copyright>        commercial version may interest you: https://www.altair.com/ra
 !||    inirbe3                             ../starter/source/constraints/general/rbe3/hm_read_rbe3.F
 !||    inisen                              ../starter/source/tools/sensor/inisen.F
 !||    inisms                              ../starter/source/general_controls/computation/hm_read_sms.F
+!||    init_bcs_nrf                        ../starter/source/boundary_conditions/init_bcs_nrf.F90
 !||    init_joint                          ../starter/source/constraints/general/cyl_joint/init_joint.F
 !||    init_mat_weight                     ../starter/source/user_interface/set_dd_mat_weight.F
 !||    init_mlaw_tag                       ../starter/source/elements/elbuf_init/init_mlaw_tag.F
@@ -477,6 +478,7 @@ Copyright>        commercial version may interest you: https://www.altair.com/ra
 !||    xgrtails                            ../starter/source/elements/xelem/xgrtails.F
 !||    yctrl                               ../starter/source/initial_conditions/inista/yctrl.F
 !||--- uses       -----------------------------------------------------
+!||    apply_permutation_mod               ../starter/source/spmd/tools/apply_permutation.F90
 !||    bpreload_mod                        ../starter/share/modules1/bpreload_mod.F
 !||    brokmann_elem_renum_mod             ../starter/source/materials/fail/windshield_alter/brokmann_elem_spmd_renum.F90
 !||    chk_shell_offset_mod                ../starter/source/elements/shell/shell_offset/chk_shell_offset.F90
@@ -510,6 +512,7 @@ Copyright>        commercial version may interest you: https://www.altair.com/ra
 !||    inigrav                             ../starter/share/modules1/inigrav_mod.F
 !||    inimap1d_mod                        ../starter/share/modules1/inimap1d_mod.F
 !||    inimap2d_mod                        ../starter/share/modules1/inimap2d_mod.F
+!||    init_bcs_nrf_mod                    ../starter/source/boundary_conditions/init_bcs_nrf.F90
 !||    init_monvol_mod                     ../starter/source/airbag/init_monvol.F
 !||    inivol_def_mod                      ../starter/share/modules1/inivol_mod.F
 !||    intbufmod                           ../starter/share/modules1/restart_mod.F
@@ -672,6 +675,8 @@ C-----------------------------------------------
       use elm_group_mod , only : elm_group_
       use my_real_tot_int_transfer_mod , only : my_real_tot_int_transfer
       use rbody_part_modif_mod,     ONLY : rbody_part_check,rpart_inivel_check
+      use init_bcs_nrf_mod , only : init_bcs_nrf
+      use apply_permutation_mod , only : apply_permutation
 C-----------------------------------------------
 C   I m p l i c i t   T y p e s
 C-----------------------------------------------
@@ -1032,7 +1037,7 @@ c---  Element Buffer  --------------------------------------------------
       TYPE(MLAW_TAG_)    ,DIMENSION(:)  ,POINTER     :: MLAW_TAG
       TYPE(EOS_TAG_)     ,DIMENSION(:)  ,ALLOCATABLE :: EOS_TAG
       TYPE(PROP_TAG_)    ,DIMENSION(0:MAXPROP)       :: PROP_TAG
-      TYPE(FAIL_TAG_)    ,DIMENSION(0:MAXFAIL)       :: FAIL_TAG
+      TYPE(FAIL_TAG_)    ,DIMENSION(:,:),ALLOCATABLE :: FAIL_TAG
 c---- Xfem ------------------------------------------------------------
       TYPE (XFEM_SHELL_) ,DIMENSION(:), ALLOCATABLE :: CRKSHELL     ! NLEVMAX
       TYPE (XFEM_LVSET_) ,DIMENSION(:), ALLOCATABLE :: CRKLVSET     ! NLEVMAX
@@ -2193,9 +2198,10 @@ c------------------------------------
       MAT_ELEM%MAT_PARAM(1:NUMMAT) => MPARAM_INI(1:NUMMAT)
       MLAW_TAG(1:NUMMAT) => MTAG_INI(1:NUMMAT)
       NLOC_DMG%IMOD = 0
+      ALLOCATE(FAIL_TAG(NUMMAT,MAXFAIL))
 c---------------------------------------------------------------
       CALL READ_MATERIAL_MODELS(
-     .     MAT_ELEM    ,MLAW_TAG ,FAIL_TAG ,EOS_TAG    ,
+     .     MAT_ELEM    ,MLAW_TAG ,FAIL_TAG ,EOS_TAG   ,
      .     RWORK       ,SRWORK   ,IPM      ,PM         ,UNITAB    ,
      .     MULTI_FVM   ,FAILWAVE ,NLOC_DMG ,LSUBMODEL  ,TABLE     ,
      .     LTITR       ,USERL_AVAIL,MAT_NUMBER,
@@ -5188,6 +5194,7 @@ C--------------------------------------------
 C     /BCS/WALL - SLIDING BOUNDARY CONDITION
 C        (COLLOCATED SCHEME / LAW 151)
 C--------------------------------------------
+      bcs%nrf_cont_nb = 0
       IF(BCS%NUM_WALL /= 0) THEN
 C READ /BCS/WALL
         CALL HM_READ_BCS_WALL(UNITAB, LSUBMODEL, IGRNOD, NGRNOD, SENSORS, ITABM1, NUMNOD, MULTI_FVM)
@@ -5198,8 +5205,12 @@ C--------------------------------------------
       IF(BCS%NUM_NRF /= 0) THEN
 C READ /BCS/WALL
         CALL HM_READ_BCS_NRF(LSUBMODEL, IGRNOD, NGRNOD, ITABM1, NUMNOD, MULTI_FVM)
+        call my_real_tot_int_transfer(numels,eani,isolnod0)
+        call init_bcs_nrf( igrnod,ngrnod,numnod,multi_fvm,
+     .     ixs,nixs,numels,ixq,nixq,numelq,ixtg,nixtg,numeltg,n2d,
+     .     ipri,itab,nummat,mat_elem%mat_param,isolnod0,
+     .     npropgi,numgeo,npropm,igeo,pm)     
       ENDIF
-
 C--------------------------------------------
 C     READING PRELOADS
 C--------------------------------------------
@@ -5639,9 +5650,11 @@ C PERMUTATION%SOLID(NUMELS+1:2*NUMELS) : INDEX(OLD)=NEW_ID
       ALLOCATE(PERMUTATION%SOLID(MAX(2*NUMELS,1)))
       ALLOCATE(PERMUTATION%SHELL(MAX(2*NUMELC,1)))
       ALLOCATE(PERMUTATION%TRIANGLE(MAX(2*NUMELTG,1)))
+      allocate(permutation%quad(max(2*numelq,1)))
       PERMUTATION%TRIANGLE = 0
       PERMUTATION%SHELL = 0
       PERMUTATION%SOLID = 0
+      permutation%quad = 0
 
 C------------------------------------------------------------------------
 C     REPLACING EXTERNAL IDS OF FCTS AND SKEW BY SYSTEM IDS
@@ -5972,10 +5985,14 @@ C        You have to take into account the options or front (i, p) = 1, p <> 1
 C        Type 2 sensors modify front on p<>1
       ELSEIF(IDDLEVEL==0) THEN
          IF(NELEM+NCONLD+GLOB_THERM%NUMCONV+GLOB_THERM%NUMRADIA+GLOB_THERM%NFXFLUX+SLCFIELD>0) THEN
-           SCEP = NELEM+NCONLD+GLOB_THERM%NUMCONV+GLOB_THERM%NUMRADIA+GLOB_THERM%NFXFLUX+SLLOADP+NUMBER_LOAD_CYL
-           SCEL = NELEM+NCONLD+GLOB_THERM%NUMCONV+GLOB_THERM%NUMRADIA+GLOB_THERM%NFXFLUX+SLLOADP+NUMBER_LOAD_CYL
+           SCEP = NELEM+NCONLD+GLOB_THERM%NUMCONV+GLOB_THERM%NUMRADIA+GLOB_THERM%NFXFLUX+
+     .             SLLOADP+NUMBER_LOAD_CYL+bcs%nrf_cont_nb
+           SCEL = NELEM+NCONLD+GLOB_THERM%NUMCONV+GLOB_THERM%NUMRADIA+GLOB_THERM%NFXFLUX+
+     .             SLLOADP+NUMBER_LOAD_CYL+bcs%nrf_cont_nb
            ALLOCATE(CEP(SCEP))
            ALLOCATE(CEL(SCEL))
+           CEP(:) = -10
+           CEL(:) = -10
          ELSE
            SCEP = 1
            SCEL = 1
@@ -6184,15 +6201,18 @@ C
 C
         OFF = OFF + NUMELS
 C After IDDLEVEL Finish Indexes - Fill PERMUTATION%SOLID(NUMELS+1,PERMUTATION%SOLID(2*NUMELS)
-        DO I=1,NUMELS
-           N=PERMUTATION%SOLID(I)
-           PERMUTATION%SOLID(NUMELS+N)=I
-        ENDDO
+        call apply_permutation(numels,permutation%solid)
 !       already done in SGRHEAD / SGRTAILS
 !        CALL APPLYSORT2CLUSTER(CLUSTERS,PERMUTATION%SOLID(NUMELS+1:2*NUMELS))
         CALL APPLYSORT2FLUX(IBFFLUX,GLOB_THERM%NITFLUX,GLOB_THERM%NFXFLUX,PERMUTATION%SOLID(NUMELS+1:2*NUMELS))
         CALL APPLYSORT2FLUX(IBCR,GLOB_THERM%NIRADIA,GLOB_THERM%NUMRADIA,PERMUTATION%SOLID(NUMELS+1:2*NUMELS))
         CALL APPLYSORT2FLUX(IBCV,GLOB_THERM%NICONV,GLOB_THERM%NUMCONV,PERMUTATION%SOLID(NUMELS+1:2*NUMELS))
+        if(bcs%num_nrf>0) then
+          do ii=1,bcs%num_nrf            
+            call apply_permutation(1,bcs%nrf(ii)%list%size,bcs%nrf(ii)%list%elem_type,
+     .                             bcs%nrf(ii)%list%elem,numels,permutation%solid)
+          enddo
+        endif
       ENDIF
 
 C
@@ -6244,6 +6264,15 @@ C
      4      ITR1      ,IGRSURF  ,IGRQUAD    ,MAT_ELEM%MAT_PARAM,
      5      IGEO      ,IPM      ,IQUAOFF    ,INIVOL, IPRI)
           OFF = OFF + NUMELQ
+
+        call apply_permutation(numelq,permutation%quad)
+
+          if(bcs%num_nrf>0) then
+            do ii=1,bcs%num_nrf            
+              call apply_permutation(2,bcs%nrf(ii)%list%size,bcs%nrf(ii)%list%elem_type,
+     .                               bcs%nrf(ii)%list%elem,numelq,permutation%quad)
+            enddo
+          endif          
        ENDIF
 C
 C---- COQUES
@@ -6313,11 +6342,8 @@ C
      9        SH4ANG, IDDLEVEL , DRAPEG,IPRI, PTSHEL,DAMP_RANGE_PART)
 
          OFF = OFF + NUMELC
-
-         DO I=1,NUMELC
-            N=PERMUTATION%SHELL(I)
-            PERMUTATION%SHELL(NUMELC+N)=I
-         ENDDO
+  
+        call apply_permutation(numelc,permutation%shell)
 
          DEALLOCATE(XNUM)
       ENDIF
@@ -6573,10 +6599,15 @@ C
      9          MAT_ELEM%MAT_PARAM,SH3ANG ,DRAPEG,IPRI,PTSH3N)
          ENDIF
          OFF = OFF + NUMELTG
-         DO I=1,NUMELTG
-            N=PERMUTATION%TRIANGLE(I)
-            PERMUTATION%TRIANGLE(NUMELTG+N)=I
-         ENDDO
+ 
+        call apply_permutation(numeltg,permutation%triangle)
+
+          if(bcs%num_nrf>0) then
+            do ii=1,bcs%num_nrf            
+              call apply_permutation(7,bcs%nrf(ii)%list%size,bcs%nrf(ii)%list%elem_type,
+     .                               bcs%nrf(ii)%list%elem,numeltg,permutation%triangle)
+            enddo
+          endif            
 
        DEALLOCATE(XNUM)
       ENDIF
@@ -8051,7 +8082,7 @@ C--------------------------------------------
      .      MGRBY,SMGRBY ,NPBY,LPBY   ,SLRBODY,
      .      RBY  ,NOM_OPT,INOM_OPT(30),IGRNOD ,
      .      ITAB ,ITABM1 ,LGRAV       ,IGRV   ,
-     .      LSUBMODEL)
+     .      LSUBMODEL,IPART)
       ENDIF
 C--------------------------------------------
 C     rigid body hierarchy
@@ -8078,7 +8109,7 @@ C--------------------------------------------
      .                        NUMNOD  ,ITAB  ,NPART ,IPART   ,LIPART1,       
      .                        ICODE   ,ISKEW ,NFXVEL,NIFV    ,IBFV ,
      .                        NGRAV   ,NIGRV ,IGRV  ,SLGRAV  ,LGRAV,
-     .                        NUMSKW) 
+     .                        NUMSKW  ,X  ) 
         CALL RPART_INIVEL_CHECK(NRBYKIN ,NNPBY ,NPBY  ,SLPBY    ,LPBY   ,        
      .                        HM_NINVEL ,NUMNOD,ITABM1,LSUBMODEL,UNITAB ,        
      .                        NTRANSF   ,NRTRANS,RTRANS,RBY_INIAXIS,ISKWN,     
@@ -10662,7 +10693,7 @@ C
      G    SENSORS,SCEP    ,EBCS_TAB,LOADS,IFRAME,
      H    GLOB_THERM%NICONV ,GLOB_THERM%NIRADIA ,GLOB_THERM%NITFLUX,
      I    GLOB_THERM%NUMCONV,GLOB_THERM%NUMRADIA,GLOB_THERM%NFXFLUX,
-     J    SENSOR_USER_STRUCT)
+     J    SENSOR_USER_STRUCT,bcs)
 
 C      ELSE
 C       set front to 1 i.e. all nodes on proc1, weight 1
@@ -10932,8 +10963,9 @@ C--------------------------------------------
      4      IGRSURF,IBCL   ,ADDCNE  ,CEP     ,
      5      ILEN   ,GEO    ,IBCV   ,IBCR    ,IBFFLUX ,
      6      ILOADP ,LLOADP ,CEL    ,EBCS_TAB,LOADS,
-     7    GLOB_THERM%NICONV ,GLOB_THERM%NIRADIA ,GLOB_THERM%NITFLUX,
-     8    GLOB_THERM%NUMCONV,GLOB_THERM%NUMRADIA,GLOB_THERM%NFXFLUX)
+     7      GLOB_THERM%NICONV ,GLOB_THERM%NIRADIA ,GLOB_THERM%NITFLUX,
+     8      GLOB_THERM%NUMCONV,GLOB_THERM%NUMRADIA,GLOB_THERM%NFXFLUX,
+     9      bcs)
           IF(I2NSNT>0) THEN
             IF(LCNI2G>0) ALLOCATE(CNI2(LCNI2G))
             CALL FILLCNI2(
@@ -11284,7 +11316,7 @@ c
      E         DRAPEG       ,USER_WINDOWS ,OUTPUT        ,INTERFACES  ,NUMBER_LOAD_CYL ,
      F         LOADS_PER_PROC(P), PYTHON,DPL0CLD,VEL0CLD ,NAMES_AND_TITLES,
      G         BCS_PER_PROC(P),constraint_struct,glob_therm,PBLAST,RWSTIF_PEN ,SLN_PEN ,
-     H         IN_SFEM, NE_SFEM)
+     H         IN_SFEM, NE_SFEM , bcs)
       GOTO 220
  221  CONTINUE
 
@@ -11599,6 +11631,7 @@ C
       IF(ALLOCATED(DPL0CLD)) DEALLOCATE(DPL0CLD)
       IF(ALLOCATED(VEL0CLD)) DEALLOCATE(VEL0CLD)
       IF(ALLOCATED(EBCS_TAG_CELL_SPMD)) DEALLOCATE(EBCS_TAG_CELL_SPMD)
+      IF(ALLOCATED(FAIL_TAG)) DEALLOCATE(FAIL_TAG)
 C----------------------------------------------
 
       RETURN
@@ -11715,6 +11748,9 @@ C-----------------------------------------------
         DO I=1,NUMELTG
            PERMUTATION%TRIANGLE(I)=I
         ENDDO
+        do i=1,numelq
+          permutation%quad(i)=i
+        enddo
 
       RETURN
       END
